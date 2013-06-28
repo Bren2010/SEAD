@@ -128,7 +128,7 @@ class exports.Router extends EventEmitter
             # If equal, accept if metric is lower.
             # If higher, always accept.
             res = curr? and cand.sq is curr.sq and cand.metric + 1 < curr.metric
-            res = res and cur.metric isnt Infinity
+            res = res and curr.metric isnt Infinity
             res = res or not curr? or cand.sq > curr.sq
             
             res
