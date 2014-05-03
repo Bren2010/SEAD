@@ -1,18 +1,11 @@
 # Customized CoffeeScript implementation of SEAD.
 crypto = require 'crypto'
+config = require 'config'
 {EventEmitter} = require 'events'
+caesar = require 'caesar'
 schnorr = require './schnorr'
 
 exports.prime = '/SxBVGXvC3DMj7x4F1HlLz9cwyCrUWxvr5C8jMbS/WGI7FHrccsHsBbsGgu+rDmkEMuIP/Py31rljvxipc7NYw=='
-hash = (val, n) ->
-    i = 0
-    while i < n
-        h = crypto.createHash 'sha256'
-        h.end val
-        val = h.read().toString 'hex'
-        ++i
-    
-    val
 
 class exports.Router extends EventEmitter
     constructor: ->
@@ -24,33 +17,72 @@ class exports.Router extends EventEmitter
         
         @conns = {}
         @table = {}
+        @cache = {}
         
         @configure()
         
         # Every 5 seconds, distribute our routing table.
-        setInterval @network, 5000, @conns, @table
+        setInterval @network, config.sead.period, @conns, @table
     
     configure: ->
         sq = if @table[@id]? then @table[@id].sq + 1 else 0
         
-        # Generate a random string as h0, and calculate h100.
-        r = crypto.randomBytes(32).toString 'hex'
-        c = hash r, 100
-        
-        # Sign the sequence number and h100.
-        sig = new schnorr.Sign 'sha256'
-        sig.write sq.toString()
-        sig.end c
-        sig = sig.sign @dh, 'hex'
-        
-        # Create our entry.
-        @table[@id] =
-            metric: 0
-            next: null
-            sq: sq
-            auth: r
-            chain: c
-            signature: sig
+        if sq % config.sead.n is 0
+            # Create a signing object for later.
+            signer = new caesar.kts.Signer 1
+            @oldSecret = @secret
+            @secret = signer.getPrivateKey()[1]
+            
+            # Generate n random hash chains.
+            anchors = []
+            
+            until anchors.length is config.sead.n
+                val = @secret + ':' + anchors.length
+                anchors.push caesar.hash.chain val, config.sead.m + 1, 'sha1'
+            
+            # Add the signer's public key as the last object.
+            anchors.push signer.getPublicKey()
+            
+            # Sign the commitment cheaply.
+            if @oldSecret?
+                signer = new caesar.kts.Signer 1, @oldSecret
+                msg = Math.floor(sq / config.sead.n).toString() + commit
+                sig = signer.sign msg
+                
+                proof = @committer.getProof(config.sead.n - 1)
+                
+                ver = [sig, proof]
+            else ver = null
+            
+            # Commit to all of it with a Merkle tree.
+            @committer = new caesar.tree.Committer anchors, 'sha1'
+            commit = @committer.getCommit()
+            proof = @committer.getProof 0
+            
+            # Sign the commitment expensively.
+            sig = new schnorr.Sign 'sha1'
+            sig.write Math.floor(sq / config.sead.n).toString()
+            sig.end commit
+            sig = sig.sign @dh, 'hex'
+            
+            # Create our entry.
+            first = caesar.hash.chain @secret + ':0', 1, 'sha1'
+            
+            @table[@id] =
+                metric: 0 # Metric number.
+                next: null # Next peer in route.
+                sq: sq # Sequence number.
+                element: first # Current element of hash chain.
+                proof: proof # Merkle tree proof that this chain is valid.
+                verification: ver # Cheap verification of the root.
+                signature: sig # Expensive verification of the root.
+        else
+            val = @secret + ':' + (sq % config.sead.n)
+            first = caesar.hash.chain val, 1, 'sha1'
+            
+            @table[@id].sq = sq
+            @table[@id].proof = @committer.getProof(sq % config.sead.n)
+            @table[@id].element = first
     
     # Feeds the router a new connection.
     #
@@ -139,29 +171,50 @@ class exports.Router extends EventEmitter
                 metric: entry.metric + 1
                 next: sender
                 sq: entry.sq
-                auth: entry.auth
-                chain: entry.chain
+                element: entry.element
+                proof: entry.proof
+                verification: entry.verification
                 signature: entry.signature
             
-            cand.auth = hash cand.auth, 1
+            cand.element = caesar.hash.chain cand.element, 1, 'sha1'
             
-            # Verify the signature on the chain cap.
-            dh = crypto.createDiffieHellman exports.prime, 'base64'
-            dh.setPublicKey id, 'hex'
+            # Verify types of values.
             
-            ver = new schnorr.Verify 'sha256'
-            ver.write cand.sq.toString()
-            ver.end cand.chain
-            ver = ver.verify dh, cand.signature, 'hex'
-            if not ver then continue
+            x = config.sead.m - cand.metric
+            if x < 0 then continue
             
-            # Verify the authentication element.
-            if cand.metric >= 100 then continue
-            cap = hash cand.auth, 100 - cand.metric
-            if cap isnt cand.chain then continue
+            anchor = caesar.hash.chain cand.element, x, 'sha1'
+            root = caesar.tree.forward anchor, cand.proof, 'sha1'
             
-            # Accept entry.
+            # Verify cand.proof is of correct number.
+            
+            if @table[id]? # Have knowledge of this user.
+                oldItr = Math.floor(@table[id].sq / config.sead.n)
+                newItr = Math.floor(cand.sq / config.sead.n)
+                
+                if newItr is (oldItr + 1)
+                    ver = new caesar.kts.Verifier()
+                    
+                    msg = newItr + root
+                    [pub, temp] = ver.forward msg, cand.verification[0]
+                    old = caesar.tree.forward pub, cand.verification[1], 'sha1'
+                    
+                    if old isnt @cache[id] then continue
+                else if newItr is oldItr and root isnt @cache[id] then continue
+                else continue
+            else # Have no knowledge of this user.
+                # Verify the root.
+                dh = crypto.createDiffieHellman exports.prime, 'base64'
+                dh.setPublicKey id, 'hex'
+                
+                ver = new schnorr.Verify 'sha1'
+                ver.write Math.floor(cand.sq / config.sead.n).toString()
+                ver.end root
+                ver = ver.verify dh, cand.signature, 'hex'
+                if not ver then continue
+            
             @table[id] = cand
+            @cache[id] = root
     
     network: (conns, table) ->
         # Push a copy of the routing table to all neighbors.
