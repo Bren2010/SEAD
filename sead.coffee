@@ -5,6 +5,11 @@ config = require 'config'
 caesar = require 'caesar'
 sjcl = require './sjcl'
 
+# Calculate size of update packets.
+config.sead.j = Math.log(config.sead.n + 1) / Math.log(2)
+config.sead.x = 565 + (42 * config.sead.j)
+config.sead.y = 49 + config.sead.x
+
 getProofNumber = (proof) ->
     num = ''
     num = (1 - line[0]) + num for line in proof
@@ -19,7 +24,7 @@ class Packet
             
             if type is 0 and @boxed.length is 49 then return 'id'
             if type is 1 and @boxed.length >= 49 then return 'data'
-            if type is 2 and @boxed.length is 698 then return 'update'
+            if type is 2 and @boxed.length is config.sead.y then return 'update'
             
             return 'bad'
         
@@ -33,7 +38,7 @@ class Packet
                 
                 @boxed.writeUInt8 1, 0
             else if type is 'update'
-                @boxed = new Buffer 698
+                @boxed = new Buffer config.sead.y
                 @boxed.fill 0
                 
                 @boxed.writeUInt8 2, 0
@@ -75,7 +80,7 @@ class Packet
 
 class Entry
     constructor: (entry) ->
-        @boxed = new Buffer 649
+        @boxed = new Buffer config.sead.x
         @boxed.fill 0
         
         @__defineGetter__ 'metric', ->
@@ -106,9 +111,8 @@ class Entry
         
         @__defineGetter__ 'proof', ->
             [c, i, proof] = [125, 0, []]
-            j = Math.log(config.sead.n + 1) / Math.log(2)
             
-            until i is j
+            until i is config.sead.j
                 p = []
                 p[0] = @boxed.readUInt8 c
                 p[1] = @boxed.slice(c + 1, c + 21).toString('hex')
@@ -129,9 +133,8 @@ class Entry
                 c += 21
         
         @__defineGetter__ 'verification', ->
-            [c, i, verification] = [125, 0, [[], []]]
-            j = Math.log(config.sead.n + 1) / Math.log(2)
-            c += 21 * j
+            [i, verification] = [0, [[], []]]
+            c = 125 + (21 * config.sead.j)
             
             until i is 22
                 verification[0].push @boxed.slice(c, c + 20).toString('hex')
@@ -140,7 +143,7 @@ class Entry
                 ++i
             
             i = 0
-            until i is j
+            until i is config.sead.j
                 p = []
                 p[0] = @boxed.readUInt8 c
                 p[1] = @boxed.slice(c + 1, c + 21).toString('hex')
@@ -153,9 +156,7 @@ class Entry
             verification
         
         @__defineSetter__ 'verification', (verification) ->
-            c = 125
-            j = Math.log(config.sead.n + 1) / Math.log(2)
-            c += 21 * j
+            c = 125 + (21 * config.sead.j)
             
             for part in verification[0] # A KTS sig.
                 @boxed.write part, c, 20, 'hex'
@@ -435,6 +436,7 @@ class exports.Router extends EventEmitter
         
         if @table[id]?
             now = Math.floor(Date.now() / 1000) + @deltaT
+            if cand.timestamp > now then return
             if (now - cand.timestamp) > @ttl then return
             
             # If candidate's sq is less than current, always ignore.
@@ -446,8 +448,8 @@ class exports.Router extends EventEmitter
             
             if cand.sq is @table[id].sq and (cand.metric+1) >= @table[id].metric
                 return
-        
-        # If sequence number is higher, always accept.
+            
+            # If sequence number is higher, always accept.
         
         # Increase metric and hash chain by 1.
         cand.metric = cand.metric + 1
