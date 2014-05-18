@@ -184,9 +184,9 @@ class exports.Router extends EventEmitter
     constructor: (nowRemote) ->
         @deltaT = nowRemote - Math.floor(Date.now() / 1000)
         
-        @ttl = config.sead.timeouts.interval * config.sead.n
-        @ttl += config.sead.m * config.sead.period
-        @ttl += config.sead.timeouts.grace
+        x = config.sead.timeouts.interval * config.sead.n
+        y = config.sead.m * config.sead.period
+        @ttl = Math.max(x, y) + config.sead.timeouts.grace
         @ttl = Math.floor(@ttl / 1000)
         
         c = sjcl.ecc.curves.c192

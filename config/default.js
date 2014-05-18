@@ -6,7 +6,7 @@ exports.sead = {
         salt: 'yOJFVshLUL',
         count: 1000
     },
-    timeouts: { // ttl = (interval * n) + (m * period) + grace
+    timeouts: { // ttl = max((n * interval), (m * period)) + grace
         interval: 60000, // On what interval to push up sequence number manually.
         grace: 30000, // Grace to give a node to push a new routing entry.
         cleanup: 10000 // On what interval to clean the routing table.
