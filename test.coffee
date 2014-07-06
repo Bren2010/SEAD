@@ -3,7 +3,12 @@ net = require 'net'
 readline = require 'readline'
 
 sead = require './sead'
-router = new sead.Router(Math.floor(Date.now() / 1000))
+router = new sead.Router(time)
+time = #A tiny time abstraction.
+    difference: 0
+    set: (now) -> @difference = now - Math.floor(Date.now() / 1000)
+    get: () -> @difference + Math.floor(Date.now() / 1000)
+
 console.log 'Id: ', router.id
 router.on 'data', (data) ->
     console.log 'New Message: ', data.toString()
@@ -14,7 +19,7 @@ server.listen ->
     rl = readline.createInterface input: process.stdin, output: process.stdout
     rl.on 'line', (line) ->
         line = line.trim().split ' '
-        
+
         if line[0] is 'connect' and line[1] isnt ''
             [host, port] = line[1].split ':'
             conn = net.connect port, host, -> router.feed conn
@@ -28,7 +33,7 @@ server.listen ->
             msg = line.splice(2).join ' '
             router.write line[1], msg, (ok) ->
                 if not ok then console.log 'Failed!'
-        
+
         rl.prompt true
-    
+
     rl.prompt true
