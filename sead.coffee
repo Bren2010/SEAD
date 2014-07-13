@@ -222,9 +222,10 @@ class exports.Router extends EventEmitter
         @table = {}
         @cache = {}
         @heard = {} # broadcasts already heard.
+        @sinceLast = {} # entrys changed since last dump
 
         # Every 5 seconds, distribute our routing table.
-        setInterval @network, config.sead.period, @conns, @table
+        setInterval @network.bind(this), config.sead.period
 
         # Push up sequence number every so often.
         run = => if @table[@id]? then @configure()
@@ -305,6 +306,8 @@ class exports.Router extends EventEmitter
             @table[@id].proof = @committer.getProof(sq % config.sead.n)
             @table[@id].element = first
 
+        @network true
+
     # Feeds the router a new connection.
     #
     # @param Stream  conn  The Read/Write stream to feed to the router.
@@ -338,6 +341,7 @@ class exports.Router extends EventEmitter
                     id = data.id
                     @conns[id] = conn
                     @conns[id].key = key
+                    @conns[id].needsFullDump = true
                     @conns[id].secureWrite = (data, fn) ->
                         # Create an HMAC on the shared key, and MAC the packet
                         # with it.  Provides neighbor authentication.
@@ -528,18 +532,33 @@ class exports.Router extends EventEmitter
                 if not ver then return
         catch err then return
 
+        sendUpdate = if @table[id].sq < cand.sq then true else false
+
+        @sinceLast[id] = true
         @table[id] = cand
         @cache[id] = root
 
+        @network true
+
         return
 
-    network: (conns, table) ->
+    network: (triggered = false) ->
         # Push a copy of the routing table to all neighbors.
-        for id of conns
-            for peerId, cargo of table
-                packet = new Packet()
-                packet.type = 'update'
-                packet.id = peerId
-                packet.cargo = cargo.boxed
+        push = (conn, peerId, cargo) ->
+            packet = new Packet()
+            packet.type = 'update'
+            packet.id = peerId
+            packet.cargo = cargo.boxed
 
-                conns[id].secureWrite packet.boxed
+            conn.secureWrite packet.boxed
+
+        for id of @conns
+            if @conns[id].needsFullDump and not triggered
+                @conns[id].needsFullDump = false
+
+                push @conns[id], peerId, cargo for peerId, cargo of @table
+            else
+                for peerId of @sinceLast when @table[peerId]?
+                    push @conns[id], peerId, @table[peerId]
+
+        @sinceLast = {}
