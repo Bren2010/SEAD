@@ -234,7 +234,9 @@ class exports.Router extends EventEmitter
         # Clean up routing table and list of heard broadcasts.
         clean = =>
             for id, entry of @table
-                if (@time.get() - entry.timestamp) > @ttl then delete @table[id]
+                if (@time.get() - entry.timestamp) > @ttl
+                    @emit 'disconnect', id
+                    delete @table[id]
 
             for id, timestamp of @heard
                 if (@time.get() - timestamp) > @bcastTtl then delete @heard[id]
@@ -534,6 +536,7 @@ class exports.Router extends EventEmitter
         catch err then return
 
         sendUpdate = if @table[id]?.sq < cand.sq then true else false
+        if not @table[id]? then @emit 'connect', id
 
         @sinceLast[id] = true
         @table[id] = cand
