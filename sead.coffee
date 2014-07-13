@@ -306,6 +306,7 @@ class exports.Router extends EventEmitter
             @table[@id].proof = @committer.getProof(sq % config.sead.n)
             @table[@id].element = first
 
+        @sinceLast[@id] = true
         @network true
 
     # Feeds the router a new connection.
@@ -437,7 +438,7 @@ class exports.Router extends EventEmitter
         conn.write packet.boxed
 
     write: (addr, data, fn) ->
-        if @table[addr]? and @table[addr].metric isnt Infinity
+        if @conns[@table[addr]?.next]? and @table[addr].metric isnt Infinity
             packet = new Packet()
             packet.type = 'data'
             packet.to = addr
@@ -532,17 +533,17 @@ class exports.Router extends EventEmitter
                 if not ver then return
         catch err then return
 
-        sendUpdate = if @table[id].sq < cand.sq then true else false
+        sendUpdate = if @table[id]?.sq < cand.sq then true else false
 
         @sinceLast[id] = true
         @table[id] = cand
         @cache[id] = root
 
-        @network true
+        @network true, id
 
         return
 
-    network: (triggered = false) ->
+    network: (triggered = false, except = null) ->
         # Push a copy of the routing table to all neighbors.
         push = (conn, peerId, cargo) ->
             packet = new Packet()
@@ -552,13 +553,14 @@ class exports.Router extends EventEmitter
 
             conn.secureWrite packet.boxed
 
-        for id of @conns
+        for id of @conns when id isnt except
             if @conns[id].needsFullDump and not triggered
                 @conns[id].needsFullDump = false
 
-                push @conns[id], peerId, cargo for peerId, cargo of @table
+                for peerId, cargo of @table when id isnt peerId
+                    push @conns[id], peerId, cargo
             else
-                for peerId of @sinceLast when @table[peerId]?
+                for peerId of @sinceLast when id isnt peerId and @table[peerId]?
                     push @conns[id], peerId, @table[peerId]
 
         @sinceLast = {}
